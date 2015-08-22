@@ -1,0 +1,119 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Pierre McCann"
+date: "Friday, August 21, 2015"
+output: html_document
+---
+
+##Introduction
+I created my script to allow for reproducibility - both in terms of setting a seed to allow others to reproduce my work, and by passing data to helper functions to ensure that the exact same data cleansing was performed on both the `train` and `test` data sets.
+
+My model is a random forest.
+
+##Configure the environment and load the data
+```{r}
+library(caret)
+library(randomForest)
+library(dplyr)
+set.seed(125)
+
+#load train data (train.orig)
+if(!"pml-training.csv" %in% list.files()){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv")
+}
+if(!"train.orig" %in% ls()){
+  train.orig <- read.csv("pml-training.csv") 
+}
+
+#load test data (test.orig)
+if(!"pml-testing.csv" %in% list.files()){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv")
+}
+if(!"test.orig" %in% ls()){
+  test.orig <- read.csv("pml-testing.csv")
+}
+```
+
+##display helper functions
+These are the helper functions I used to ensure that my train and test data sets were processed exactly the same way.   The `clean.data` function only affects columns, not rows,
+```{r}
+#helper functions
+prop.na <- function(x){sum(is.na(x))/length(x)}
+
+clean.data <- function(data){
+  
+  ##drop columns with NAs
+  x <- data.frame(sapply(data, prop.na))
+  vars_to_drop <- rownames(subset(x,x > 0))
+  data <- data[, !names(data) %in% vars_to_drop]
+  
+  ##drop factor columns
+  result <- NULL
+  for (i in 1:length(data)){
+    if(!is.factor(data[,i])){
+      result <- data.frame(cbind(result, as.numeric(data[,i])))
+      names(result)[length(result)] <- names(data)[i]
+    }
+  }
+  
+  ##drop the X variable, which appears to be only a serial number
+  result <- select(result, -X)
+  ##drop the timestamps, because we are making predictions against the movement, not the time the movement took place
+  result <- select(result, -raw_timestamp_part_1)
+  result <- select(result, -raw_timestamp_part_2)
+  ##drop the num_window variable
+  result <- select(result, -num_window)
+  
+  result
+}
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+```
+
+##Selecting features
+While examining the data, I noticed that many features were almost entirely `NA`s.   I removed these features due to their increase of dimensionality and their lack of information.   I also removed all factor columns, largely as an experiment - however, when it worked, I decided to leave them out.   Finally, I removed some of the features that appeared to describe information not directly related to the movement - for instance, who was doing the movement or when it was done.   I felt that I would be inviting a risk of overfitting if I left those features in place, and so I took them out.
+
+My feature selections ultimately reduced 160 features down to 52.   I could have performed additional dimensionality reduction through preprocessing with Principal Components Analysis, but I found my model ended up working well and I could build it in about 30 minutes, using 75% of the original training data (`train.orig`).
+
+##data cleaning and paritioning
+I opted to select only about 75% of the available training data on which to build my model.   The purpose of this reduced training data set was to maintain a reserve of data against which to estimate my out-of-sample error.   I will note that random forests don't
+```{r}
+#clean the data
+train.clean <- clean.data(train.orig)
+test.clean <- clean.data(test.orig)
+
+#partition the data
+inTrain <- createDataPartition(train.orig$classe, p = 0.75, list = FALSE)
+
+#create new training and testing subsets from the clean training set
+train.subset <- train.clean[inTrain,]
+test.subset <- train.clean[-inTrain,]
+```
+
+##build the model
+In order to reduce the build time of the model, I reduced the number of trees from the default 500 down to 250.   This still allows for every feature to be randomly selected by about 5 different trees, giving each feature an appropriate amount of weight in the voting scheme used for prediction.
+
+Random forests do not need additional cross-validation or out-of-sample error estimators, because these metrics are calculated as part of building the model.   As a result, I let the random forest build using the default bootstrapping method in the train control.   After the model build, I will test my model against the `test.subset` which is about 25% of the original training data `train.orig`.
+
+```{r}
+model <- train(train.orig$classe[inTrain] ~ ., method = "rf", ntree = 250, data = train.subset)
+```
+
+With the model built, I can now print some useful information to view the model and estimate my out-of-sample error, which is 0.7%.   I can also see from my confusion matrix that my model is about 99.25% accurate.   
+```{r}
+model$finalModel
+confusionMatrix(predict(model$finalModel, newdata = test.subset), train.orig[-inTrain,"classe"])
+varImpPlot(model$finalModel, cex = 0.7, main = "Variables by Importance")
+```
+
+With the model build complete, I can now create my predictions against the given test data which was cleaned above.
+```{r}
+predictions <- predict(model$finalModel, newdata = test.clean)
+#pml_write_files(predictions) #commented out to prevent the repo from being filled up with files
+```
